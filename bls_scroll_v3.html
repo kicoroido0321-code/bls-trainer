@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BLSスクロール試作（成人30:2）</title>
+  <style>
+    body {
+      background: #f8f9fb;
+      text-align: center;
+      font-family: sans-serif;
+      margin: 0;
+    }
+    #game {
+      background: white;
+      border: 1px solid #ccc;
+      display: block;
+      margin: 20px auto;
+    }
+    #judge {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 48px;
+      font-weight: bold;
+      color: white;
+      text-shadow: 0 0 8px black;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .ui {
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h2>💓 BLS Rhythm Trainer – Adult 30:2</h2>
+
+  <div class="ui">
+    テンポ(BPM): <input type="number" id="bpm" value="110" min="60" max="150">
+    <button id="start">▶ 開始</button>
+    <button id="stop">⏹ 停止</button>
+    <button id="reset">🔄 リセット</button>
+  </div>
+
+  <canvas id="game" width="1000" height="600"></canvas>
+  <div id="judge"></div>
+
+  <p>タップ判定：赤＝胸骨圧迫（単発）、青＝人工呼吸（長押し）。右→左に流れ、左の人体の口と胸の位置が判定ライン。</p>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const W = 1000, H = 600;
+
+    const img = new Image();
+    img.src = "./IMG_2148.jpeg"; // 背景の人体画像
+    let imgReady = false;
+    img.onload = () => imgReady = true;
+
+    const bpmInput = document.getElementById("bpm");
+    const startBtn = document.getElementById("start");
+    const stopBtn = document.getElementById("stop");
+    const resetBtn = document.getElementById("reset");
+    const judgeEl = document.getElementById("judge");
+
+    let running = false;
+    let notes = [];
+    let currentTime = 0;
+    let startTime = 0;
+    let bpm = 110;
+
+    // ノーツ位置（Y座標調整）
+    const chestY = 360; // 胸骨圧迫のライン
+    const mouthY = 190; // 人工呼吸のライン
+
+    // 判定ライン（左端）
+    const judgeX = 200;
+
+    function createNotes() {
+      notes = [];
+      for (let i = 0; i < 30; i++) {
+        notes.push({ type: "chest", x: 1000 + i * 180, y: chestY });
+      }
+      notes.push({ type: "breath", x: 1000 + 30 * 180 + 200, y: mouthY, long: true });
+    }
+
+    function showJudge(text, color) {
+      judgeEl.textContent = text;
+      judgeEl.style.color = color;
+      judgeEl.style.opacity = 1;
+      setTimeout(() => judgeEl.style.opacity = 0, 600);
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      if (imgReady) ctx.drawImage(img, 0, 0, 400, 600);
+
+      // 判定ライン
+      ctx.strokeStyle = "#ccc";
+      ctx.beginPath();
+      ctx.moveTo(judgeX, 0);
+      ctx.lineTo(judgeX, H);
+      ctx.stroke();
+
+      // ノーツ
+      notes.forEach(n => {
+        ctx.fillStyle = n.type === "chest" ? "rgba(255,0,0,0.7)" : "rgba(0,0,255,0.7)";
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.long ? 50 : 25, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    function update() {
+      const elapsed = (Date.now() - startTime) / 1000;
+      const speed = bpm / 60 * 200; // BPMに応じた速度
+      notes.forEach(n => (n.x -= speed * 0.016));
+
+      draw();
+      if (running) requestAnimationFrame(update);
+    }
+
+    canvas.addEventListener("click", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      // 判定
+      const near = notes.find(n => Math.abs(n.x - judgeX) < 50);
+      if (near) {
+        const diff = Math.abs(near.x - judgeX);
+        if (diff < 20) showJudge("Perfect!", "#4aff4a");
+        else if (diff < 60) showJudge("Good!", "#ffd93b");
+        else showJudge("Miss!", "#ff4040");
+      } else {
+        showJudge("Miss!", "#ff4040");
+      }
+    });
+
+    startBtn.onclick = () => {
+      bpm = parseInt(bpmInput.value);
+      createNotes();
+      startTime = Date.now();
+      running = true;
+      update();
+    };
+
+    stopBtn.onclick = () => (running = false);
+    resetBtn.onclick = () => {
+      running = false;
+      createNotes();
+      draw();
+    };
+
+    draw();
+  </script>
+</body>
+</html>
