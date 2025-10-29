@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BLS Scrolling Prototype (Adult 30:2)</title>
+<style>
+  :root{
+    --blue:#0A66FF;    /* 呼吸（青） */
+    --red:#FF4B4B;     /* 圧迫（赤） */
+    --panel:#f6f7f9;
+    --line:#cfd6e3;
+  }
+  html,body{margin:0;padding:0;background:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans JP",sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:12px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+  .bar input{width:90px;padding:6px 8px;border:1px solid #d0d7de;border-radius:8px}
+  .btn{border:none;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}
+  .btn-blue{background:var(--blue);color:#fff}
+  .btn-ghost{background:#f2f4f7;border:1px solid #e5e7eb}
+  .stat{font-weight:800}
+  .stage{position:relative;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;background:linear-gradient(#fff,#fbfcff)}
+  canvas{display:block;width:100%;height:auto;background:
+     radial-gradient(1200px 300px at 20% -50%, rgba(10,102,255,.08), transparent 60%),
+     radial-gradient(800px 200px at 25% 120%, rgba(255,75,75,.06), transparent 60%)}
+  .tiny{opacity:.75;font-size:12px;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <strong>🫀 BLSスクロール試作（成人 30:2）</strong>
+    <label> BPM <input id="bpm" type="number" min="60" max="160" step="1" value="110"></label>
+    <button class="btn btn-blue" id="start">▶開始</button>
+    <button class="btn btn-ghost" id="stop">■停止</button>
+    <button class="btn btn-ghost" id="reset">↻リセット</button>
+    <span class="stat">Perfect <span id="p0">0</span> / Good <span id="p1">0</span> / Miss <span id="p2">0</span></span>
+    <span id="sound" class="tiny">🔇 音未確認</span>
+  </div>
+
+  <div class="stage"><canvas id="game" width="1000" height="600"></canvas></div>
+  <div class="tiny">タップ判定：赤＝胸骨圧迫（単発）／青＝人工呼吸（長押し）。右→左に流れ、左の人体の口と胸の位置が判定ライン。</div>
+</div>
+
+<script>
+(() => {
+  // ===== Canvas & assets =====
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W0 = 1000, H0 = 600; // 内部描画基準サイズ
+  canvas.width = W0; canvas.height = H0;
+
+  const img = new Image();
+img.src = "./IMG_2148.jpeg"; // アップした画像
+let imgReady = false;
+img.onload = () => { imgReady = true; };
+
+  // ===== UI =====
+  const startBtn = document.getElementById('start');
+  const stopBtn  = document.getElementById('stop');
+  const resetBtn = document.getElementById('reset');
+  const bpmInput = document.getElementById('bpm');
+  const statP = [document.getElementById('p0'),document.getElementById('p1'),document.getElementById('p2')];
+  const soundEl = document.getElementById('sound');
+
+  // ===== Audio (WebAudio click) =====
+  let AC, clickBuf, running=false, startTime=0, nextTick=0;
+  async function ensureAudioReady(retry=0){
+    try{
+      if(!AC) AC = new (window.AudioContext||window.webkitAudioContext)();
+      await AC.resume();
+      if(AC.state !== 'running' && retry<3){
+        setTimeout(()=>ensureAudioReady(retry+1),300);
+        soundEl.textContent='🔁 音再試行中…';
+      }else if(AC.state==='running'){
+        soundEl.textContent='🔊 音OK';
+      }
+    }catch(e){ if(retry<3) setTimeout(()=>ensureAudioReady(retry+1),300); }
+  }
+  function makeClick(ac){
+    const sr=ac.sampleRate, len=Math.ceil(0.04*sr);
+    const b=ac.createBuffer(1,len,sr), ch=b.getChannelData(0);
+    for(let i=0;i<len;i++){ const t=i/sr, env=Math.exp(-t*60);
+      ch[i]=Math.sin(2*Math.PI*1600*t)*env*0.6; }
+    return b;
+  }
+  function scheduleClicks(){
+    if(!running) return;
+    const bpm = Number(bpmInput.value)||110;
+    const spb = 60/bpm;
+    while(nextTick < AC.currentTime + 0.2){
+      const s=AC.createBufferSource(); s.buffer=clickBuf; s.connect(AC.destination); s.start(nextTick);
+      nextTick += spb;
+    }
+    requestAnimationFrame(scheduleClicks);
+  }
+
+  // ===== Lanes layout (relative) =====
+  // 口と胸のY座標：送ってもらった円の位置に合わせた比率
+  const mouthY = H0 * 0.22;  // 人工呼吸レーン
+  const chestY = H0 * 0.57;  // 胸骨圧迫レーン
+  const hitX   = 260;        // 左端の人体の少し右（判定ライン）
+  const laneRight = W0 - 40; // 右端の出現位置
+  const laneHeight = 86;
+
+  // ===== Notes (chart) =====
+  // 圧迫 30 ノーツ（単発1拍）→ 呼吸 2 ノーツ（長押し2拍）
+  const chart = [];
+  function buildChart(){
+    chart.length = 0;
+    const bpm = Number(bpmInput.value)||110;
+    const spb = 60/bpm;
+    let t = 2 * spb; // 2拍リードイン
+    for(let i=0;i<30;i++){
+      chart.push({type:'comp', time:t, hold:0, y:chestY, color:'var(--red)'});
+      t += spb;
+    }
+    // 長押し（2拍ぶん）
+    const holdLen = 2*spb;
+    chart.push({type:'breath', time:t+spb*0.5, hold:holdLen, y:mouthY, color:'var(--blue)'}); // 少し間を空ける
+    t += holdLen + spb*0.6;
+    chart.push({type:'breath', time:t, hold:holdLen, y:mouthY, color:'var(--blue)'});
+  }
+
+  // ===== Runtime state =====
+  const HIT = { perfect:0.100, good:0.160 }; // sec window
+  let judg = {perfect:0,good:0,miss:0};
+  let pointer = {down:false, lane:null, tDown:0};
+
+  // ===== Helpers =====
+  function xFromTime(tNote, now){
+    // ノーツが「tNote」に判定ラインに到達するように、右端から等速で流す
+    // now時刻のx = hitX + (tNote - now) * speed
+    const pixelsLead = laneRight - hitX;        // 判定までの距離
+    const bpm = Number(bpmInput.value)||110;
+    const spb = 60/bpm;
+    const leadTime = 4*spb; // 4拍前に出現
+    const speed = pixelsLead / leadTime;
+    return hitX + (tNote - now) * speed;
+  }
+  function drawLane(y, color){
+    // レーンの基線
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(0,0,0,.08)';
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W0, y); ctx.stroke();
+
+    // 判定ライン
+    ctx.strokeStyle = 'rgba(0,0,0,.18)';
+    ctx.beginPath(); ctx.moveTo(hitX, y - laneHeight/2); ctx.lineTo(hitX, y + laneHeight/2); ctx.stroke();
+
+    // 口/胸のガイド円（模型っぽい）
+    ctx.strokeStyle = color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(hitX, y, 34, 0, Math.PI*2); ctx.stroke();
+  }
+  function drawHuman(){
+    if(!imgReady) return;
+    // 左端に大きめに配置（キャンバスに合わせて拡大縮小）
+    const scale = 0.9; // 左側幅の割合
+    const h = H0 * 1.05;
+    const w = h * (img.width / img.height);
+    ctx.globalAlpha = 0.95;
+    ctx.drawImage(img, 0, H0 - h, w, h);
+    ctx.globalAlpha = 1;
+  }
+  function drawNote(n, now){
+    const x = xFromTime(n.time, now);
+    if(n.type==='comp'){
+      // 単発丸ノーツ
+      const r = 22;
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(n.color) || n.color;
+      ctx.beginPath(); ctx.arc(x, n.y, r, 0, Math.PI*2); ctx.fill();
+      // 輪郭
+      ctx.strokeStyle = 'rgba(0,0,0,.15)'; ctx.lineWidth = 2; ctx.stroke();
+    }else{
+      // 長押しバー（開始～終了を太棒で）
+      const xStart = xFromTime(n.time, now);
+      const xEnd   = xFromTime(n.time + n.hold, now);
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(n.color) || n.color;
+      const y = n.y - 14, h = 28;
+      ctx.fillRect(Math.min(xStart,xEnd), y, Math.abs(xEnd-xStart), h);
+      // 先頭と末端に丸キャップ
+      ctx.beginPath(); ctx.arc(xStart, n.y, 14, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(xEnd,   n.y, 14, 0, Math.PI*2); ctx.fill();
+    }
+  }
+  function judgeTap(laneY, t){
+    // そのレーンの「直近の判定時刻」に対して評価
+    let bestIdx=-1, bestDiff=1e9;
+    for(let i=0;i<chart.length;i++){
+      const n = chart[i];
+      if(n.hit) continue;
+      if(Math.abs(n.y - laneY) > 4) continue;
+      // 長押しなら開始時刻で判定、単発はその時刻
+      const ref = n.time;
+      const d = Math.abs(t - ref);
+      if(d < bestDiff) { bestDiff = d; bestIdx = i; }
+    }
+    if(bestIdx === -1) return 'miss';
+    const n = chart[bestIdx];
+    // 判定
+    if(n.type==='comp'){
+      if(bestDiff<=HIT.perfect){ n.hit='perfect'; return 'perfect'; }
+      if(bestDiff<=HIT.good){ n.hit='good'; return 'good'; }
+      n.hit='miss'; return 'miss';
+    }else{
+      // 長押し：押し始めのタイミングを評価、離すときに長さも評価
+      if(bestDiff<=HIT.good){
+        n._pressed = true; n._tDown = t; n._lane = laneY;
+        return 'good'; // 開始OK
+      }else{
+        n.hit='miss'; return 'miss';
+      }
+    }
+  }
+  function releaseHold(laneY, t){
+    // 進行中の長押しを探して長さ評価
+    for(const n of chart){
+      if(n.type!=='breath' || !n._pressed || n._lane!==laneY || n.hit) continue;
+      const dur = t - n._tDown;
+      const diff = Math.abs(dur - n.hold);
+      if(diff <= 0.12) n.hit='perfect';
+      else if(diff <= 0.22) n.hit='good';
+      else n.hit='miss';
+      delete n._pressed;
+      return n.hit;
+    }
+    return null;
+  }
+  function updateStats(){
+    judg = {perfect:0,good:0,miss:0};
+    for(const n of chart){ if(!n.hit) continue; judg[n.hit] = (judg[n.hit]||0)+1; }
+    statP[0].textContent = judg.perfect||0;
+    statP[1].textContent = judg.good||0;
+    statP[2].textContent = judg.miss||0;
+  }
+
+  // ===== Interaction (pointer) =====
+  function laneFromY(y){
+    return (Math.abs(y - mouthY) < laneHeight/2) ? mouthY
+         : (Math.abs(y - chestY) < laneHeight/2) ? chestY : null;
+  }
+  function canvasPos(e){
+    const r = canvas.getBoundingClientRect();
+    const x = (e.clientX - r.left) * (W0 / r.width);
+    const y = (e.clientY - r.top)  * (H0 / r.height);
+    return {x,y};
+  }
+  canvas.addEventListener('pointerdown', e=>{
+    if(!AC) ensureAudioReady();
+    const p = canvasPos(e);
+    const lane = laneFromY(p.y);
+    if(!lane) return;
+    pointer.down = true; pointer.lane = lane; pointer.tDown = AC?AC.currentTime:performance.now()/1000;
+    const res = judgeTap(lane, pointer.tDown);
+    flashHit(lane, res);
+    updateStats();
+  });
+  canvas.addEventListener('pointerup', e=>{
+    if(!pointer.down) return;
+    pointer.down=false;
+    const t = AC?AC.currentTime:performance.now()/1000;
+    const res = releaseHold(pointer.lane, t);
+    if(res) flashHit(pointer.lane, res);
+    updateStats();
+  });
+
+  // ===== FX =====
+  let fx = []; // {x,y,r,alpha,color}
+  function flashHit(y, kind){
+    const color = kind==='perfect' ? 'rgba(18,184,134,0.35)'
+                : kind==='good'    ? 'rgba(0,0,0,0.20)'
+                : 'rgba(255,75,75,0.28)';
+    fx.push({x:hitX, y, r:10, alpha:1, color});
+  }
+
+  // ===== Main loop =====
+  function draw(now){
+    // 背景
+    ctx.clearRect(0,0,W0,H0);
+
+    // 人体（模型風）
+    drawHuman();
+
+    // レーン
+    drawLane(mouthY, getComputedStyle(document.documentElement).getPropertyValue('--blue'));
+    drawLane(chestY, getComputedStyle(document.documentElement).getPropertyValue('--red'));
+
+    // ノーツ
+    for(const n of chart){ drawNote(n, now); }
+
+    // FX
+    for(const f of fx){
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = 6 * f.alpha;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI*2); ctx.stroke();
+      f.r += 5; f.alpha *= 0.92;
+    }
+    fx = fx.filter(f=>f.alpha>0.05);
+  }
+  function loop(){
+    const t = AC ? AC.currentTime : performance.now()/1000;
+    draw(t);
+    if(running) requestAnimationFrame(loop);
+  }
+
+  // ===== Controls =====
+  startBtn.onclick = async ()=>{
+    await ensureAudioReady();
+    if(!clickBuf) clickBuf = makeClick(AC);
+    running = true;
+    const bpm = Number(bpmInput.value)||110;
+    const spb = 60/bpm;
+    buildChart();
+    startTime = AC.currentTime + 0.2;
+    nextTick  = startTime;
+    scheduleClicks();
+    loop();
+  };
+  stopBtn.onclick = ()=>{ running=false; };
+  resetBtn.onclick= ()=>{ running=false; buildChart(); for(const k in judg) judg[k]=0; statP.forEach(s=>s.textContent='0'); };
+
+  // 初期譜面
+  buildChart();
+})();
+</script>
+</body>
+</html>
