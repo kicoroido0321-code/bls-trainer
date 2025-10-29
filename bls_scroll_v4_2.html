@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BLS Rhythm Trainer – Adult 30:2</title>
+<style>
+  body {
+    text-align: center;
+    font-family: 'Segoe UI', sans-serif;
+    background-color: #f4f6fa;
+  }
+  canvas {
+    background-color: #fff;
+    margin-top: 10px;
+    border-radius: 8px;
+  }
+  .control {
+    margin: 10px;
+  }
+</style>
+</head>
+<body>
+<h2>💗 BLS Rhythm Trainer – Adult 30:2</h2>
+<div class="control">
+  BPM <input type="number" id="bpm" value="110" style="width:60px;"> 固定
+  <button id="start">▶️開始</button>
+  <button id="stop">⏹停止</button>
+  <button id="reset">🔄リセット</button>
+  <span id="sound">🔊音OK</span>
+</div>
+<canvas id="game" width="1000" height="600"></canvas>
+<p style="font-size:13px; color:#555;">
+赤＝胸骨圧迫（単発）／青＝人工呼吸（長押し2拍）。<br>
+右→左に流れ、左のマネキンの口・胸の円が判定ラインです。<br>
+音が出ないときは最初に「開始」を押してから操作してください。
+</p>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = 1000, H = 600;
+  canvas.width = W; canvas.height = H;
+
+  // ==== 背景マネキン ====
+  const mannequin = new Image();
+  mannequin.src = "./AA3BFA6F-7DB2-44A5-BED7-E7BC31A224EF.png"; // ← アップした画像
+  let mannequinReady = false;
+  mannequin.onload = () => mannequinReady = true;
+
+  // ==== 判定ライン座標 ====
+  const mouthY = 160;
+  const chestY = 330;
+  const lineX = 180;
+
+  // ==== ノーツ ====
+  const notes = [];
+  const bpm = 110;
+  const interval = (60 / bpm) * 1000;
+  const longNoteLen = 120; // 呼吸ノーツの長さ
+
+  for (let i = 0; i < 30; i++) {
+    notes.push({ x: W + i * 100, y: chestY, type: 'red', len: 0 });
+  }
+  // 人工呼吸ノーツ（間隔を少し空ける）
+  notes.push({ x: W + 3200, y: mouthY, type: 'blue', len: longNoteLen });
+  notes.push({ x: W + 3400, y: mouthY, type: 'blue', len: longNoteLen });
+
+  let startTime = null, running = false;
+  let AC, clickBuf;
+
+  async function ensureAudio() {
+    if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+    await AC.resume();
+    if (!clickBuf) {
+      const o = AC.createOscillator();
+      const g = AC.createGain();
+      o.connect(g).connect(AC.destination);
+      o.type = "square";
+      o.frequency.value = 1000;
+      o.start();
+      o.stop(AC.currentTime + 0.05);
+    }
+  }
+
+  // ==== 判定 ====
+  let score = { perfect: 0, good: 0, miss: 0 };
+  function judge(note, diff) {
+    if (diff < 50) score.perfect++;
+    else if (diff < 120) score.good++;
+    else score.miss++;
+  }
+
+  // ==== メインループ ====
+  function update() {
+    ctx.clearRect(0, 0, W, H);
+    if (mannequinReady) ctx.drawImage(mannequin, 0, 0, 300, 600);
+
+    // 判定円
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#aaa";
+    ctx.beginPath(); ctx.arc(lineX, mouthY, 30, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(lineX, chestY, 35, 0, Math.PI * 2); ctx.stroke();
+
+    const now = Date.now();
+    notes.forEach(n => {
+      n.x -= 4; // スクロール速度
+      ctx.fillStyle = n.type === 'red' ? '#f44' : '#3af';
+      ctx.beginPath(); ctx.arc(n.x, n.y, 20, 0, Math.PI * 2); ctx.fill();
+    });
+
+    ctx.fillStyle = "#333";
+    ctx.font = "16px sans-serif";
+    ctx.fillText(`Perfect ${score.perfect} / Good ${score.good} / Miss ${score.miss}`, 420, 30);
+
+    if (running) requestAnimationFrame(update);
+  }
+
+  document.getElementById('start').onclick = async () => {
+    await ensureAudio();
+    running = true;
+    score = { perfect: 0, good: 0, miss: 0 };
+    startTime = Date.now();
+    update();
+  };
+  document.getElementById('stop').onclick = () => running = false;
+  document.getElementById('reset').onclick = () => window.location.reload();
+})();
+</script>
+</body>
+</html>
