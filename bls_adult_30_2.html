@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>BLS Rhythm Trainer – Adult 30:2</title>
+<style>
+  :root{--blue:#0A66FF;--red:#FF4B4B;--green:#12B886;--bg:#ffffff;--text:#0b0f19}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans JP,sans-serif}
+  .wrap{max-width:1024px;margin:0 auto;padding:16px}
+  .top{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+  .badge{padding:6px 10px;border-radius:999px;background:#eef;color:#123;font-weight:700}
+  .panel{border:1px solid #e5e7eb;border-radius:12px;padding:12px;margin-bottom:12px;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input[type="number"]{width:100px;padding:10px;border:1px solid #d0d7de;border-radius:8px}
+  button{border:none;border-radius:12px;padding:12px 16px;font-size:16px;font-weight:800;cursor:pointer}
+  .btn-blue{background:var(--blue);color:#fff}
+  .btn-red{background:var(--red);color:#fff}
+  .btn-ghost{background:#f4f6f8;border:1px solid #e5e7eb}
+  .stage{position:relative;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;background:
+    linear-gradient(0deg,#fff,#fff),
+    repeating-linear-gradient(90deg,#f6f8fa 0 6px,#fff 6px 12px)}
+  .hr{height:44px;border-bottom:1px solid #e5e7eb;background:linear-gradient(90deg,#e6f0ff,#ffe6e6);display:flex;align-items:center;gap:10px;padding:0 12px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--blue);animation:blink 1.1s linear infinite}
+  @keyframes blink{0%{opacity:1}50%{opacity:.2}100%{opacity:1}}
+  .bar{height:8px;background:#eef;border-radius:999px;overflow:hidden;margin:10px 12px}
+  .fill{height:100%;width:0;background:var(--blue)}
+  .pads{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px}
+  .pad{border-radius:14px;min-height:180px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+       user-select:none;touch-action:manipulation}
+  .pad-blue{background:linear-gradient(#eef5ff,#e6f0ff);border:1px solid #d9e6ff}
+  .pad-red{background:linear-gradient(#ffeef0,#ffe6e6);border:1px solid #ffd9d9}
+  .title{font-size:18px;font-weight:900}
+  .count{font-size:44px;font-weight:900}
+  .hint{opacity:.75}
+  .judge{position:absolute;left:50%;bottom:110px;transform:translateX(-50%);font-size:28px;font-weight:900;opacity:0;
+         transition:opacity .12s, transform .12s;pointer-events:none}
+  .judge.show{opacity:1;transform:translate(-50%,-6px)}
+  .judge.perfect{color:var(--green)} .judge.good{color:#111} .judge.miss{color:var(--red)}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 12px 12px}
+  .box{border:1px solid #e5e7eb;border-radius:10px;text-align:center;padding:6px}
+  .num{font-weight:900;font-size:20px}
+  .footer{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+  .tiny{font-size:12px;opacity:.8}
+  @media (max-width:720px){.pads{grid-template-columns:1fr}.pad{min-height:150px}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="badge">BLS Rhythm Trainer – Adult 30:2</div>
+      <div class="tiny">胸骨圧迫110BPM。30回ごとに人工呼吸×2回。</div>
+    </div>
+
+    <div class="panel">
+      <div class="row">
+        <label>テンポ(BPM): <input id="bpm" type="number" min="60" max="160" step="1" value="110"></label>
+        <label>開始オフセット(ms): <input id="offset" type="number" min="-2000" max="5000" step="50" value="200"></label>
+        <button class="btn-blue" id="start">▶ 開始</button>
+        <button class="btn-ghost" id="stop">■ 停止</button>
+        <button class="btn-ghost" id="reset">↻ リセット</button>
+      </div>
+    </div>
+
+    <div class="panel stage" id="stage">
+      <div class="hr">
+        <div class="dot"></div>
+        <div>テンポ <b id="curBpm">110</b> / フェーズ <b id="phase">圧迫</b> / サイクル <b id="cycle">1</b></div>
+      </div>
+      <div class="bar"><div class="fill" id="progress" style="width:0%"></div></div>
+      <div class="stats">
+        <div class="box"><div class="tiny">Perfect</div><div class="num" id="nPerfect">0</div></div>
+        <div class="box"><div class="tiny">Good</div><div class="num" id="nGood">0</div></div>
+        <div class="box"><div class="tiny">Miss</div><div class="num" id="nMiss">0</div></div>
+      </div>
+      <div class="judge" id="judge">PERFECT</div>
+      <div class="pads">
+        <div class="pad pad-blue" id="padComp">
+          <div class="title">胸骨圧迫</div>
+          <div class="count" id="compCount">0 / 30</div>
+          <div class="hint">テンポに合わせてタップ</div>
+          <button class="btn-blue" id="btnComp" style="width:90%;max-width:460px">タップ</button>
+        </div>
+        <div class="pad pad-red" id="padBreath">
+          <div class="title">人工呼吸</div>
+          <div class="count" id="breathCount">0 / 2</div>
+          <div class="hint">圧迫30回後に実施</div>
+          <button class="btn-red" id="btnBreath" style="width:90%;max-width:460px">吹き込み</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel footer">
+      <div class="row">
+        <button class="btn-ghost" id="showResult">結果を表示</button>
+      </div>
+      <div class="tiny">音が鳴らない場合は一度「開始」を押してから操作してください（iPadの自動再生制限対策）。</div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+
+  // UI refs
+  const bpmEl = $('bpm'), offsetEl = $('offset');
+  const curBpm = $('curBpm'), phaseEl = $('phase'), cycleEl = $('cycle');
+  const compCountEl = $('compCount'), breathCountEl = $('breathCount');
+  const nPerfect=$('nPerfect'), nGood=$('nGood'), nMiss=$('nMiss');
+  const progress = $('progress'), judgeEl = $('judge');
+  const btnComp = $('btnComp'), btnBreath = $('btnBreath');
+  const startBtn = $('start'), stopBtn = $('stop'), resetBtn = $('reset'), resBtn = $('showResult');
+
+  // State
+  let AC, clickBuf, running=false, startTime=0, nextTick=0;
+  let phase='comp', cycle=1, compCount=0, breathCount=0;
+  let judg={perfect:0, good:0, miss:0};
+
+  const MAX_COMP=30, MAX_BREATH=2;
+  const HIT_WINDOWS={perfect:0.100, good:0.160}; // sec
+
+  function now(){ return AC ? AC.currentTime : performance.now()/1000; }
+
+  async function initAudio(){
+    if (!AC) AC = new (window.AudioContext||window.webkitAudioContext)();
+    if (!clickBuf) clickBuf = makeClick(AC);
+  }
+
+  function makeClick(ac){
+    // short bright click (high tone)
+    const sr = ac.sampleRate;
+    const len = Math.ceil(0.04*sr);
+    const buf = ac.createBuffer(1,len,sr);
+    const ch = buf.getChannelData(0);
+    for(let i=0;i<len;i++){
+      const t = i/sr;
+      const env = Math.exp(-t*60);
+      ch[i] = Math.sin(2*Math.PI*1600*t) * env * 0.6;
+    }
+    return buf;
+  }
+
+  function scheduleClicks(){
+    if (!running) return;
+    const bpm = Number(bpmEl.value)||110;
+    const spb = 60/bpm;
+    const t = AC.currentTime;
+    while (nextTick < t + 0.2){
+      const src = AC.createBufferSource();
+      src.buffer = clickBuf;
+      src.connect(AC.destination);
+      src.start(nextTick);
+      nextTick += spb;
+    }
+    requestAnimationFrame(scheduleClicks);
+  }
+
+  function start(){
+    initAudio().then(() => {
+      reset(false);
+      running=true;
+      const off = (Number(offsetEl.value)||0)/1000;
+      startTime = AC.currentTime + 0.2;
+      nextTick = startTime + off;
+      AC.resume();
+      scheduleClicks();
+      updateUI();
+    });
+  }
+
+  function stop(){ running=false; updateUI(); }
+
+  function reset(resetCycle=true){
+    judg={perfect:0,good:0,miss:0};
+    compCount=0; breathCount=0;
+    if (resetCycle) cycle=1;
+    phase='comp';
+    updateUI();
+  }
+
+  function expectedBeat(t){
+    const bpm=Number(bpmEl.value)||110, spb=60/bpm;
+    const base = startTime + (Number(offsetEl.value)||0)/1000;
+    const k = Math.round((t - base)/spb);
+    return base + k*spb;
+  }
+
+  function judgeTap(t){
+    const tgt = expectedBeat(t);
+    const d = Math.abs(t - tgt);
+    let kind='miss';
+    if (d <= HIT_WINDOWS.perfect) kind='perfect';
+    else if (d <= HIT_WINDOWS.good) kind='good';
+    judg[kind]++;
+    showJudge(kind);
+    return kind;
+  }
+
+  function showJudge(kind){
+    judgeEl.className = 'judge show ' + kind;
+    judgeEl.textContent = kind.toUpperCase();
+    setTimeout(()=>{ judgeEl.classList.remove('show'); }, 180);
+  }
+
+  function onCompTap(){
+    if (!running || phase!=='comp') return;
+    if (!AC) return;
+    AC.resume();
+    judgeTap(AC.currentTime);
+    compCount++;
+    if (compCount >= MAX_COMP){ phase='breath'; breathCount=0; }
+    updateUI();
+  }
+
+  function onBreathTap(){
+    if (!running || phase!=='breath') return;
+    if (!AC) return;
+    AC.resume();
+    judgeTap(AC.currentTime); // optional judgement
+    breathCount++;
+    if (breathCount >= MAX_BREATH){ phase='comp'; compCount=0; cycle++; }
+    updateUI();
+  }
+
+  function updateUI(){
+    curBpm.textContent = bpmEl.value;
+    phaseEl.textContent = (phase==='comp'?'圧迫':'呼吸');
+    cycleEl.textContent = cycle;
+    compCountEl.textContent = compCount + ' / ' + MAX_COMP;
+    breathCountEl.textContent = breathCount + ' / ' + MAX_BREATH;
+    nPerfect.textContent = judg.perfect;
+    nGood.textContent = judg.good;
+    nMiss.textContent = judg.miss;
+    const pct = phase==='comp' ? (compCount/MAX_COMP*100) : (breathCount/MAX_BREATH*100);
+    progress.style.width = Math.min(100, Math.floor(pct)) + '%';
+  }
+
+  function bindTap(el, fn){
+    el.addEventListener('touchstart', e=>{ e.preventDefault(); fn(); }, {passive:false});
+    el.addEventListener('click', e=>{ e.preventDefault(); fn(); });
+  }
+
+  function showResult(){
+    const total = judg.perfect + judg.good + judg.miss;
+    const acc = total ? ((judg.perfect + 0.5*judg.good)/total*100) : 0;
+    alert(`結果
+———
+サイクル: ${cycle-1} 完了
+Perfect: ${judg.perfect}
+Good: ${judg.good}
+Miss: ${judg.miss}
+精度: ${acc.toFixed(1)}%
+BPM: ${bpmEl.value}`);
+  }
+
+  bindTap(btnComp, onCompTap);
+  bindTap(btnBreath, onBreathTap);
+  bindTap(startBtn, start);
+  bindTap(stopBtn, stop);
+  bindTap(resetBtn, ()=>reset(true));
+  bindTap(resBtn, showResult);
+
+  // Avoid double-tap zoom on iOS
+  let lastTouch=0;
+  document.addEventListener('touchend', e=>{
+    const now = Date.now();
+    if (now - lastTouch < 300) e.preventDefault();
+    lastTouch = now;
+  }, {passive:false});
+})();
+</script>
+</body>
+</html>
