@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BLS Rhythm Trainer v4（Adult 30:2, mannequin）</title>
+<style>
+  :root{
+    --blue:#1877ff;   /* 人工呼吸 */
+    --red:#ff4b4b;    /* 胸骨圧迫 */
+    --ink:#0f172a;
+  }
+  html,body{margin:0;background:#f6f7fb;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans JP",sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:12px}
+  h1{margin:6px 0 10px;font-size:28px}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  .btn{border:none;border-radius:12px;padding:10px 14px;font-weight:800;cursor:pointer}
+  .btn-blue{background:var(--blue);color:#fff}
+  .btn-ghost{background:#eef1f6;border:1px solid #e3e7ef}
+  .stage{position:relative;border:1px solid #e8ebf1;border-radius:16px;background:#fff;overflow:hidden}
+  canvas{display:block;width:100%;height:auto;background:
+    radial-gradient(1200px 300px at 35% -40%, rgba(24,119,255,.08), transparent 60%),
+    radial-gradient(1000px 260px at 40% 120%, rgba(255,75,75,.06), transparent 60%)}
+  #judge{
+    position:absolute;inset:auto 0 42% 0;margin:auto;width:max-content;
+    font-size:46px;font-weight:900;letter-spacing:.5px;color:#fff;
+    text-shadow:0 6px 22px rgba(0,0,0,.35),0 0 8px rgba(0,0,0,.25);
+    opacity:0;transform:translateY(8px);transition:opacity .18s ease,transform .18s ease;
+    pointer-events:none
+  }
+  .tiny{opacity:.75;font-size:12px;margin-top:8px}
+  .pill{font:700 12px/1 system-ui;padding:4px 8px;border-radius:999px;background:#eef2ff;color:#334155}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>💓 BLS Rhythm Trainer – Adult 30:2</h1>
+
+  <div class="bar">
+    <span class="pill">BPM 110 固定</span>
+    <button class="btn btn-blue" id="start">▶ 開始</button>
+    <button class="btn btn-ghost" id="stop">■ 停止</button>
+    <button class="btn btn-ghost" id="reset">↻ リセット</button>
+    <span id="sound" class="tiny">🔇 音未確認</span>
+    <span class="tiny" id="stats"></span>
+  </div>
+
+  <div class="stage">
+    <canvas id="game" width="1000" height="600"></canvas>
+    <div id="judge">Perfect!</div>
+  </div>
+
+  <div class="tiny">赤＝胸骨圧迫（単発）／青＝人工呼吸（長押し2拍）。右→左に流れ、左のマネキンの<strong>口・胸の円</strong>が判定ラインです。音が出ないときは最初に「開始」を押してから操作してください。</div>
+</div>
+
+<script>
+(()=>{
+// ===== Canvas =====
+const W=1000,H=600;
+const cvs=document.getElementById('game'), ctx=cvs.getContext('2d');
+cvs.width=W; cvs.height=H;
+
+// ===== Assets（マネキン背景） =====
+const mannequin=new Image();
+mannequin.src='./IMG_2148.jpeg'; // 既存の画像名
+let imgReady=false; mannequin.onload=()=>imgReady=true;
+
+// ===== Layout =====
+// 左側の表示幅（マネキンを置く領域）
+const mannequinBox = { x:40, y:0, w:360, h:H }; // 左マージン40px
+// 判定ライン（人体上に重なる位置）
+const hitX = mannequinBox.x + Math.round(mannequinBox.w*0.55); // 左領域のやや右
+const mouthY = 190;  // 顔（あなたの絵に合わせた高さ）
+const chestY = 360;  // 胸
+
+// レーン装飾サイズ
+const judgeRadius = 34;      // 判定円半径
+const laneHalf = 92/2;       // 縦の当たり幅
+const noteR = 22;            // 圧迫ノーツ円
+const holdHalfH = 16;        // 長押しバーの半高さ
+
+// ===== WebAudio（クリック音：iPad対応） =====
+let AC, clickBuf, running=false, startTime=0, nextTick=0;
+const soundEl=document.getElementById('sound');
+async function ensureAudioReady(retry=0){
+  try{
+    if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();
+    await AC.resume();
+    if(AC.state!=='running' && retry<3){
+      setTimeout(()=>ensureAudioReady(retry+1),250);
+      soundEl.textContent='🔁 音再試行中…';
+    }else if(AC.state==='running'){
+      soundEl.textContent='🔊 音OK';
+    }
+  }catch(e){ if(retry<3) setTimeout(()=>ensureAudioReady(retry+1),250); }
+}
+function makeClick(ac){
+  const sr=ac.sampleRate, len=Math.ceil(0.045*sr);
+  const b=ac.createBuffer(1,len,sr), ch=b.getChannelData(0);
+  for(let i=0;i<len;i++){ const t=i/sr, env=Math.exp(-t*60); ch[i]=Math.sin(2*Math.PI*1500*t)*env*0.6; }
+  return b;
+}
+function scheduleClicks(){
+  if(!running) return;
+  const bpm=110, spb=60/bpm;
+  while(nextTick<AC.currentTime+0.2){
+    const s=AC.createBufferSource(); s.buffer=clickBuf; s.connect(AC.destination); s.start(nextTick);
+    nextTick+=spb;
+  }
+  requestAnimationFrame(scheduleClicks);
+}
+
+// ===== 譜面（成人30:2） =====
+const chart=[];
+function buildChart(){
+  chart.length=0;
+  const bpm=110, spb=60/bpm;
+  let t = 2*spb; // 2拍リードイン
+  for(let i=0;i<30;i++){ chart.push({type:'comp', time:t, hold:0, y:chestY}); t+=spb; }
+  const hold=2*spb;
+  chart.push({type:'breath', time:t+0.5*spb, hold:hold, y:mouthY});
+  t+=hold+0.6*spb;
+  chart.push({type:'breath', time:t, hold:hold, y:mouthY});
+}
+
+// ===== 判定 & 進行 =====
+const HIT={ perfect:0.10, good:0.16 }; // 秒
+let stats={perfect:0,good:0,miss:0};
+const statsEl=document.getElementById('stats'), judgeEl=document.getElementById('judge');
+
+function xFromTime(tNote, now){
+  // 右端（出現）→ 判定位置 hitX に等速で届く
+  const right=W-40;
+  const bpm=110, spb=60/bpm, lead=4*spb; // 4拍前に出現
+  const speed=(right-hitX)/lead;
+  return hitX + (tNote - now)*speed;
+}
+
+function showJudge(txt, color){
+  judgeEl.textContent=txt;
+  judgeEl.style.color=color;
+  judgeEl.style.opacity=1;
+  judgeEl.style.transform='translateY(0)';
+  setTimeout(()=>{ judgeEl.style.opacity=0; judgeEl.style.transform='translateY(8px)'; }, 600);
+}
+
+function judgeTap(laneY, t){
+  let best=-1, bestDiff=1e9;
+  for(let i=0;i<chart.length;i++){
+    const n=chart[i]; if(n.hit) continue; if(Math.abs(n.y-laneY)>4) continue;
+    const ref=n.time; const d=Math.abs(t-ref);
+    if(d<bestDiff){bestDiff=d; best=i;}
+  }
+  if(best===-1) return 'miss';
+  const n=chart[best];
+  if(n.type==='comp'){
+    if(bestDiff<=HIT.perfect){ n.hit='perfect'; return 'perfect'; }
+    if(bestDiff<=HIT.good){ n.hit='good'; return 'good'; }
+    n.hit='miss'; return 'miss';
+  }else{
+    if(bestDiff<=HIT.good){ n._pressed=true; n._tDown=t; n._lane=laneY; return 'good'; }
+    n.hit='miss'; return 'miss';
+  }
+}
+function releaseHold(laneY, t){
+  for(const n of chart){
+    if(n.type!=='breath'||!n._pressed||n._lane!==laneY||n.hit) continue;
+    const dur=t-n._tDown, diff=Math.abs(dur-n.hold);
+    if(diff<=0.12) n.hit='perfect'; else if(diff<=0.22) n.hit='good'; else n.hit='miss';
+    delete n._pressed; return n.hit;
+  }
+  return null;
+}
+function updateStats(){
+  stats={perfect:0,good:0,miss:0};
+  for(const n of chart){ if(n.hit) stats[n.hit]=(stats[n.hit]||0)+1; }
+  statsEl.textContent=`Perfect ${stats.perfect||0} / Good ${stats.good||0} / Miss ${stats.miss||0}`;
+}
+
+// ===== 入力 =====
+let pointer={down:false,lane:null};
+function laneFromY(y){
+  return (Math.abs(y-mouthY)<laneHalf)?mouthY:(Math.abs(y-chestY)<laneHalf)?chestY:null;
+}
+function canvasPos(e){
+  const r=cvs.getBoundingClientRect();
+  const x=(e.clientX-r.left)*(W/r.width);
+  const y=(e.clientY-r.top)*(H/r.height);
+  return {x,y};
+}
+cvs.addEventListener('pointerdown',e=>{
+  ensureAudioReady(); // 最初のユーザ操作でAudioContext解放
+  const p=canvasPos(e), lane=laneFromY(p.y); if(!lane) return;
+  pointer.down=true; pointer.lane=lane;
+  const t=AC?AC.currentTime:performance.now()/1000;
+  const res=judgeTap(lane,t);
+  if(res==='perfect') showJudge('Perfect!', 'rgba(18,184,134,1)');
+  else if(res==='good') showJudge('Good!', '#ffd93b');
+  else showJudge('Miss!', '#ff4b4b');
+  updateStats();
+});
+cvs.addEventListener('pointerup',e=>{
+  if(!pointer.down) return; pointer.down=false;
+  const t=AC?AC.currentTime:performance.now()/1000;
+  const res=releaseHold(pointer.lane,t);
+  if(res){
+    if(res==='perfect') showJudge('Perfect!', 'rgba(18,184,134,1)');
+    else if(res==='good') showJudge('Good!', '#ffd93b');
+    else showJudge('Miss!', '#ff4b4b');
+    updateStats();
+  }
+});
+
+// ===== 描画 =====
+function drawHuman(){
+  if(!imgReady) return;
+  // マネキン風に：比率維持で左ボックスへ、上からほんのり影と色味
+  const ratio=mannequin.width/mannequin.height;
+  const h=mannequinBox.h, w=h*ratio;
+  const x=mannequinBox.x, y=mannequinBox.y;
+  ctx.drawImage(mannequin, x, y, w, h);
+  // ピンクベージュのトーンを薄く重ねる（模型っぽく）
+  ctx.fillStyle='rgba(255,212,196,0.22)'; ctx.fillRect(x, y, w, h);
+  // 区切りの縦線
+  ctx.strokeStyle='rgba(0,0,0,.08)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(mannequinBox.x+mannequinBox.w, 0); ctx.lineTo(mannequinBox.x+mannequinBox.w, H); ctx.stroke();
+}
+
+function drawLane(y, color){
+  // 判定ラインの縦線
+  ctx.strokeStyle='rgba(0,0,0,.20)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(hitX, y-laneHalf); ctx.lineTo(hitX, y+laneHalf); ctx.stroke();
+  // 判定円（マネキン上に見える）
+  ctx.lineWidth=4; ctx.strokeStyle=color;
+  ctx.beginPath(); ctx.arc(hitX, y, judgeRadius, 0, Math.PI*2); ctx.stroke();
+}
+
+function drawNote(n, now){
+  const x = xFromTime(n.time, now);
+  if(n.type==='comp'){
+    ctx.fillStyle='var(--red)';
+    ctx.beginPath(); ctx.arc(x, n.y, noteR, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle='rgba(0,0,0,.15)'; ctx.lineWidth=2; ctx.stroke();
+  }else{
+    // 長押しバー
+    const xS = xFromTime(n.time, now);
+    const xE = xFromTime(n.time+n.hold, now);
+    const y = n.y - holdHalfH, h = holdHalfH*2;
+    ctx.fillStyle='var(--blue)';
+    ctx.fillRect(Math.min(xS,xE), y, Math.abs(xE-xS), h);
+    ctx.beginPath(); ctx.arc(xS, n.y, holdHalfH, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(xE, n.y, holdHalfH, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function render(now){
+  ctx.clearRect(0,0,W,H);
+  drawHuman();
+  drawLane(mouthY, 'var(--blue)');
+  drawLane(chestY, 'var(--red)');
+  for(const n of chart) drawNote(n, now);
+}
+
+// ===== ループ =====
+function loop(){
+  const t=AC?AC.currentTime:performance.now()/1000;
+  render(t);
+  if(running) requestAnimationFrame(loop);
+}
+
+// ===== Controls =====
+const startBtn=document.getElementById('start');
+const stopBtn =document.getElementById('stop');
+const resetBtn=document.getElementById('reset');
+
+startBtn.onclick=async()=>{
+  await ensureAudioReady();
+  if(!clickBuf) clickBuf=makeClick(AC);
+  buildChart(); updateStats();
+  running=true;
+  startTime=AC.currentTime+0.2; nextTick=startTime;
+  scheduleClicks(); loop();
+};
+stopBtn.onclick = ()=>{ running=false; };
+resetBtn.onclick= ()=>{ running=false; buildChart(); updateStats(); render(AC?AC.currentTime:performance.now()/1000); };
+
+// 初期描画
+buildChart(); updateStats(); render(performance.now()/1000);
+})();
+</script>
+</body>
+</html>
