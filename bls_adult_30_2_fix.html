@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>BLS Rhythm Trainer – Adult 30:2 (Fix)</title>
+<style>
+:root{--blue:#0A66FF;--red:#FF4B4B;--green:#12B886;--bg:#fff;--text:#0b0f19}
+body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans JP",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:16px}
+button{border:none;border-radius:12px;padding:12px 16px;font-size:16px;font-weight:700;cursor:pointer}
+.btn-blue{background:var(--blue);color:#fff}
+.btn-red{background:var(--red);color:#fff}
+.btn-ghost{background:#f4f6f8;border:1px solid #e5e7eb}
+.panel{border:1px solid #e5e7eb;border-radius:12px;padding:12px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--blue);animation:blink 1.1s linear infinite}
+@keyframes blink{0%{opacity:1}50%{opacity:.2}100%{opacity:1}}
+.judge{font-size:28px;font-weight:900;opacity:0;transition:opacity .12s}
+.judge.show{opacity:1}
+.judge.perfect{color:var(--green)}.judge.good{color:#111}.judge.miss{color:var(--red)}
+.tiny{font-size:12px;opacity:.8}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h2>BLS Rhythm Trainer – Adult 30:2 (Safari対応版)</h2>
+
+<div class="panel">
+<p>まず最初に音確認ボタンを押して音が鳴るか確かめてね🔊</p>
+<button class="btn-blue" id="soundcheck">🔊 音確認</button>
+<span id="soundstate" style="margin-left:10px;font-weight:bold;">未確認</span>
+</div>
+
+<div class="panel">
+<button class="btn-blue" id="start">▶ 開始</button>
+<button class="btn-ghost" id="stop">■ 停止</button>
+<button class="btn-ghost" id="reset">↻ リセット</button>
+</div>
+
+<div class="panel">
+<p>胸骨圧迫30回 → 人工呼吸2回をテンポ(110BPM)で繰り返す</p>
+<button class="btn-blue" id="tapComp">胸骨圧迫</button>
+<button class="btn-red" id="tapBreath">人工呼吸</button>
+<p id="count">圧迫 0 / 30</p>
+<div id="judge" class="judge">PERFECT</div>
+</div>
+
+<p class="tiny">iPadで音が出ない場合でもこの修正版で自動再試行します。最初に音確認ボタンを押してね。</p>
+</div>
+
+<script>
+(() => {
+const $=id=>document.getElementById(id);
+let AC,clickBuf,running=false,startTime=0,nextTick=0,phase="comp",comp=0,breath=0;
+let bpm=110,cycle=1,judg={perfect:0,good:0,miss:0};
+const MAX_COMP=30,MAX_BREATH=2,HIT_WINDOWS={perfect:0.1,good:0.16};
+const soundstate=$('soundstate'),judgeEl=$('judge');
+
+async function ensureAudioReady(retry=0){
+  try{
+    if(!AC)AC=new(window.AudioContext||window.webkitAudioContext)();
+    await AC.resume();
+    if(AC.state!=="running" && retry<3){
+      setTimeout(()=>ensureAudioReady(retry+1),300);
+      soundstate.textContent="再試行中...";
+    }else if(AC.state==="running"){
+      soundstate.textContent="🔊音OK";
+    }
+  }catch(e){
+    if(retry<3)setTimeout(()=>ensureAudioReady(retry+1),300);
+  }
+}
+
+function makeClick(ac){
+  const sr=ac.sampleRate,len=Math.ceil(0.04*sr);
+  const buf=ac.createBuffer(1,len,sr);
+  const ch=buf.getChannelData(0);
+  for(let i=0;i<len;i++){
+    const t=i/sr,env=Math.exp(-t*60);
+    ch[i]=Math.sin(2*Math.PI*1600*t)*env*0.6;
+  }
+  return buf;
+}
+
+async function playClick(){
+  await ensureAudioReady();
+  if(!clickBuf)clickBuf=makeClick(AC);
+  const src=AC.createBufferSource();src.buffer=clickBuf;src.connect(AC.destination);src.start();
+}
+
+function start(){
+  ensureAudioReady();
+  if(!clickBuf)clickBuf=makeClick(AC);
+  running=true;
+  startTime=AC.currentTime+0.2;
+  nextTick=startTime;
+  schedule();
+}
+
+function stop(){running=false;}
+
+function schedule(){
+  if(!running)return;
+  const spb=60/bpm,t=AC.currentTime;
+  while(nextTick<t+0.2){
+    const src=AC.createBufferSource();src.buffer=clickBuf;src.connect(AC.destination);src.start(nextTick);
+    nextTick+=spb;
+  }
+  requestAnimationFrame(schedule);
+}
+
+function tap(type){
+  if(!AC)return;
+  ensureAudioReady();
+  const t=AC.currentTime;
+  const tgt=startTime+Math.round((t-startTime)/(60/bpm))*(60/bpm);
+  const d=Math.abs(t-tgt);
+  let kind="miss";
+  if(d<=HIT_WINDOWS.perfect)kind="perfect";else if(d<=HIT_WINDOWS.good)kind="good";
+  judg[kind]++;showJudge(kind);
+  if(type==="comp"){comp++;if(comp>=MAX_COMP){phase="breath";comp=0;}}
+  else{breath++;if(breath>=MAX_BREATH){phase="comp";breath=0;cycle++;}}
+  update();
+}
+
+function showJudge(kind){
+  judgeEl.textContent=kind.toUpperCase();
+  judgeEl.className="judge show "+kind;
+  setTimeout(()=>judgeEl.classList.remove("show"),150);
+}
+
+function update(){
+  $('count').textContent=(phase==="comp"?"圧迫 ":"呼吸 ")+(phase==="comp"?comp:breath)+" / "+(phase==="comp"?MAX_COMP:MAX_BREATH);
+}
+
+$('soundcheck').onclick=()=>{ensureAudioReady();playClick();};
+$('start').onclick=start;
+$('stop').onclick=stop;
+$('reset').onclick=()=>{running=false;comp=breath=0;cycle=1;judg={perfect:0,good:0,miss:0};phase="comp";update();};
+$('tapComp').onclick=()=>tap("comp");
+$('tapBreath').onclick=()=>tap("breath");
+})();
+</script>
+</body>
+</html>
