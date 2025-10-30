@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BLS Rhythm Trainer v4.8 – Stable Edition</title>
+<style>
+  body {
+    margin: 0;
+    background-color: #faefdb;
+    font-family: "Segoe UI", "Rounded Mplus 1c", sans-serif;
+    text-align: center;
+    overflow: hidden;
+  }
+  h2 { margin-top: 10px; color:#d85b7b; }
+  canvas {
+    background-color: #faefdb;
+    border-radius: 8px;
+    margin-top: 10px;
+  }
+  .controls { margin: 10px 0; }
+  #judge {
+    position: absolute;
+    top: 45%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 48px;
+    font-weight: bold;
+    color: white;
+    text-shadow: 0 0 10px black;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+  }
+  #resultPanel {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(255, 246, 236, 0.9);
+    border: 3px solid #f5a3a3;
+    border-radius: 16px;
+    padding: 24px 48px;
+    text-align: center;
+    font-family: "Segoe UI", "Rounded Mplus 1c", sans-serif;
+    color: #d85b7b;
+    font-weight: bold;
+    font-size: 26px;
+    opacity: 0;
+    transition: opacity 1s ease;
+    pointer-events: none;
+    box-shadow: 0 0 12px rgba(255, 200, 200, 0.5);
+  }
+</style>
+</head>
+<body>
+<h2>💖 BLS Rhythm Trainer – Warm Pop FX Edition (v4.8)</h2>
+<div class="controls">
+  <button id="start">▶ 開始</button>
+  <button id="stop">■ 停止</button>
+  <button id="reset">↻ リセット</button>
+  <span id="sound" style="font-size:13px;color:#444;">🔇 音未確認</span>
+</div>
+
+<div style="position:relative;display:inline-block;">
+  <canvas id="game" width="1000" height="600"></canvas>
+  <div id="judge">Perfect!</div>
+  <div id="resultPanel"></div>
+</div>
+
+<p style="font-size:13px;color:#555;">
+赤＝胸骨圧迫（単発）／青＝人工呼吸（長押し2拍）<br>
+右→左に流れ、左マネキンの口・胸が判定ラインです。
+</p>
+
+<script>
+(() => {
+const W=1000,H=600;
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const judgeEl=document.getElementById("judge");
+const resultPanel=document.getElementById("resultPanel");
+
+const mannequin=new Image();
+mannequin.src="./AA3BFA6F-7DB2-44A5-BED7-E7BC31A224EF.png";
+let imgReady=false; mannequin.onload=()=>imgReady=true;
+
+const mouthY=H*0.32;
+const chestY=H*0.61;
+const hitX=190;
+
+let AC, clickBuf, running=false;
+async function ensureAudio(){
+  if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();
+  await AC.resume();
+  if(!clickBuf){
+    const len=AC.sampleRate*0.04;
+    clickBuf=AC.createBuffer(1,len,AC.sampleRate);
+    const d=clickBuf.getChannelData(0);
+    for(let i=0;i<len;i++)
+      d[i]=Math.sin(2*Math.PI*1000*i/AC.sampleRate)*Math.exp(-i/(len/8));
+  }
+  document.getElementById("sound").textContent="🔊 音OK";
+}
+function click(){
+  const s=AC.createBufferSource();
+  s.buffer=clickBuf;
+  s.connect(AC.destination);
+  s.start();
+}
+
+let perfect=0, good=0, miss=0;
+function showJudge(text,color){
+  judgeEl.textContent=text;
+  judgeEl.style.color=color;
+  judgeEl.style.opacity=1;
+  setTimeout(()=>judgeEl.style.opacity=0,500);
+}
+
+// 💖 ハート演出
+function spawnHeart(x,y){
+  hearts.push({x,y,vy:-1,alpha:1});
+}
+let hearts=[];
+
+// ✨ 閃光演出
+function spawnFlash(x,y,color){
+  flashes.push({x,y,life:1,color});
+}
+let flashes=[];
+
+// ノーツ生成
+const bpm=110;
+const spb=60/bpm;
+const chart=[];
+let t=2*spb;
+for(let i=0;i<30;i++){ chart.push({type:"comp",time:t,y:chestY,hit:false}); t+=spb; }
+const hold=1.2*spb;
+chart.push({type:"breath",time:t+0.7*spb,hold:hold,y:mouthY});
+t+=1.2*spb+0.7*spb;
+chart.push({type:"breath",time:t+0.7*spb,hold:hold,y:mouthY});
+
+const HIT={perfect:0.1,good:0.18};
+function judgeTap(y,time){
+  for(const n of chart){
+    if(n.hit||Math.abs(n.y-y)>6) continue;
+    const diff=Math.abs(time-n.time);
+    if(diff<HIT.perfect){n.hit="perfect";return"perfect";}
+    if(diff<HIT.good){n.hit="good";return"good";}
+  }
+  return"miss";
+}
+
+canvas.addEventListener("pointerdown",async e=>{
+  await ensureAudio(); click();
+  const rect=canvas.getBoundingClientRect();
+  const y=(e.clientY-rect.top)*(H/rect.height);
+  if(!running)return;
+  const lane=Math.abs(y-mouthY)<40?mouthY:(Math.abs(y-chestY)<40?chestY:null);
+  if(!lane)return;
+  const t=AC.currentTime;
+  const res=judgeTap(lane,t);
+  if(res==="perfect"){perfect++;showJudge("Perfect!","#ff8ccf");spawnHeart(hitX,lane-20);spawnFlash(hitX,lane,"#ffbcd9");}
+  else if(res==="good"){good++;showJudge("Good!","#ffd93b");spawnFlash(hitX,lane,"#fff3a3");}
+  else {miss++;showJudge("Miss!","#ff4b4b");}
+});
+
+function draw(now){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle="#faefdb"; ctx.fillRect(0,0,W,H);
+  if(imgReady){
+    const ratio=mannequin.width/mannequin.height;
+    const targetH=H;
+    const targetW=targetH*ratio;
+    ctx.drawImage(mannequin,0,0,targetW,targetH);
+  }
+  ctx.fillStyle="rgba(150,180,255,0.25)";
+  ctx.fillRect(0,mouthY-20,W,40);
+  ctx.fillStyle="rgba(255,180,180,0.25)";
+  ctx.fillRect(0,chestY-20,W,40);
+
+  ctx.lineWidth=4;
+  ctx.strokeStyle="#1877ff";
+  ctx.beginPath(); ctx.arc(hitX,mouthY,30,0,Math.PI*2); ctx.stroke();
+  ctx.strokeStyle="#ff4b4b";
+  ctx.beginPath(); ctx.arc(hitX,chestY,35,0,Math.PI*2); ctx.stroke();
+
+  const right=W-40;
+  const lead=4*spb;
+  const speed=(right-hitX)/lead;
+  for(const n of chart){
+    const x=hitX+(n.time-now)*speed;
+    if(x<-100||x>W+100)continue;
+    if(n.type==="comp"){
+      ctx.fillStyle="#ff4b4b";
+      ctx.beginPath(); ctx.arc(x,n.y,20,0,Math.PI*2); ctx.fill();
+    }else{
+      const xE=hitX+(n.time+n.hold-now)*speed;
+      ctx.fillStyle="#1877ff";
+      ctx.fillRect(Math.min(x,xE),n.y-10,Math.abs(xE-x),20);
+      ctx.beginPath(); ctx.arc(x,n.y,10,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(xE,n.y,10,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  // ハート描画
+  for(const h of hearts){
+    ctx.globalAlpha=h.alpha;
+    ctx.fillStyle="#ff8ccf";
+    ctx.beginPath();
+    ctx.moveTo(h.x,h.y);
+    ctx.bezierCurveTo(h.x-6,h.y-8,h.x-14,h.y+2,h.x,h.y+12);
+    ctx.bezierCurveTo(h.x+14,h.y+2,h.x+6,h.y-8,h.x,h.y);
+    ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  // 閃光描画
+  for(const f of flashes){
+    ctx.globalAlpha=f.life;
+    ctx.fillStyle=f.color;
+    ctx.beginPath();
+    ctx.arc(f.x,f.y,25*(1-f.life),0,Math.PI*2);
+    ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  // 更新処理
+  for(const h of hearts){ h.y+=h.vy; h.alpha-=0.02; }
+  for(const f of flashes){ f.life-=0.05; }
+
+  // ✅ ← これが修正点！ちゃんと消える！
+  hearts = hearts.filter(h=>h.alpha>0);
+  flashes = flashes.filter(f=>f.life>0);
+}
+
+function loop(){
+  const t=AC?AC.currentTime:performance.now()/1000;
+  draw(t);
+  if(running) requestAnimationFrame(loop);
+  else if(chart.every(n=>n.hit)) showResult();
+}
+
+function showResult(){
+  const total=chart.length;
+  const score=Math.round((perfect*3+good*1)/(total*3)*100);
+  resultPanel.innerHTML=`💖 SCORE ${score}点！<br>Perfect: ${perfect}　Good: ${good}　Miss: ${miss}`;
+  resultPanel.style.opacity=1;
+}
+
+document.getElementById("start").onclick=async()=>{
+  await ensureAudio(); click();
+  running=true; perfect=good=miss=0;
+  resultPanel.style.opacity=0;
+  loop();
+};
+document.getElementById("stop").onclick=()=>{running=false; showResult();};
+document.getElementById("reset").onclick=()=>window.location.reload();
+
+})();
+</script>
+</body>
+</html>
