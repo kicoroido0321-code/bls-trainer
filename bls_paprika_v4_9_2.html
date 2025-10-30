@@ -204,18 +204,18 @@ function draw(now){
   ctx.strokeStyle="#ff4b4b";
   ctx.beginPath(); ctx.arc(hitX,chestY,35,0,Math.PI*2); ctx.stroke();
 
-  const right=W-40;
-  const lead=8.0; // ← ノーツ移動時間を8秒に変更（ゆったり流れる）
+  const right=W+300; // ← 画面右外からスタート
+  const lead=12.0;   // ← 12秒で判定円に到達
   const speed=(right-hitX)/lead;
 
   for(const n of chart){
-    const x=hitX+(n.time-now)*speed;
-    if(x<-120||x>W+120) continue;
+    const x=hitX+(n.time-now)*speed + 300; // ← オフセットを足して右外から流れる
+    if(x<-120||x>W+400) continue;
     if(n.type==="comp"){
       ctx.fillStyle="#ff4b4b";
       ctx.beginPath(); ctx.arc(x,n.y,20,0,Math.PI*2); ctx.fill();
     }else{
-      const xE=hitX+(n.time+n.hold-now)*speed;
+      const xE=hitX+(n.time+n.hold-now)*speed + 300;
       ctx.fillStyle="#1877ff";
       ctx.fillRect(Math.min(x,xE),n.y-10,Math.abs(xE-x),20);
       ctx.beginPath(); ctx.arc(x,n.y,10,0,Math.PI*2); ctx.fill();
@@ -295,8 +295,8 @@ document.getElementById("start").onclick=async()=>{
   runCountdown(()=>{
     goTime=AC.currentTime;
 
-    const NOTE_TRAVEL=8.0; // ← 修正版: ノーツ移動に8秒
-    const appearDelay=ARRIVE_AT - NOTE_TRAVEL; // 出現=12 - 8 = 4秒後
+    const NOTE_TRAVEL=12.0; // ノーツ移動に12秒
+    const appearDelay=ARRIVE_AT - NOTE_TRAVEL; // 出現=12 - 12 = 0秒後（Go直後に右端外から登場）
     const startBase=goTime + appearDelay;
 
     chart=chartTemplate.map(n=>({
