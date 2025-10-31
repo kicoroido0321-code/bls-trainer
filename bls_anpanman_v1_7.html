@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>BLS Rhythm Trainer – アンパンマンのマーチ v1.7 (GO+3s / 右端出現)</title>
+<style>
+  body{margin:0;background:#faefdb;font-family:"Segoe UI","Rounded Mplus 1c",sans-serif;text-align:center;overflow:hidden;}
+  h2{margin-top:10px;color:#d85b7b}
+  canvas{background:#faefdb;border-radius:8px;margin-top:10px}
+  .controls{margin:10px 0}
+  #judge{position:absolute;top:45%;left:50%;transform:translate(-50%,-50%);
+    font-size:48px;font-weight:800;color:#fff;text-shadow:0 0 10px #0008;opacity:0;transition:opacity .3s;pointer-events:none}
+  #result{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    background:rgba(255,246,236,.95);border:3px solid #f5a3a3;border-radius:16px;padding:22px 40px;
+    color:#d85b7b;font-weight:700;font-size:24px;box-shadow:0 0 12px rgba(255,200,200,.5);opacity:0;transition:opacity .8s}
+  #count{position:absolute;top:38%;left:50%;transform:translate(-50%,-50%);
+    font-size:96px;font-weight:900;color:#d85b7b;text-shadow:0 6px 18px rgba(216,91,123,.35);opacity:0;transition:opacity .2s}
+  #hint{font-size:13px;color:#666;margin:6px 0 10px}
+</style>
+</head>
+<body>
+<h2>💖 BLS Rhythm Trainer – アンパンマンのマーチ（v1.7）</h2>
+
+<div class="controls">
+  <button id="start">▶ 開始</button>
+  <button id="stop">■ 停止</button>
+  <button id="reset">↻ リセット</button>
+  <span id="sound" style="font-size:13px;color:#444">🔇 音未確認</span>
+</div>
+
+<div style="position:relative;display:inline-block;">
+  <canvas id="game" width="1000" height="600"></canvas>
+  <div id="judge">Perfect!</div>
+  <div id="result"></div>
+  <div id="count">3</div>
+</div>
+
+<p id="hint">
+赤＝胸骨圧迫（単発）／青＝人工呼吸（長押し2拍）<br>
+右→左に流れます。左のマネキンの口・胸の円が判定ライン。<br>
+<b>「GO!」の3秒後に最初の赤ノーツが判定円に到達</b>します。
+</p>
+
+<script>
+(()=>{
+
+// ===== Canvas / layout =====
+const W=1000,H=600;
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+
+const hitX=190;                 // 判定円X
+const mouthY=H*0.32, chestY=H*0.61;
+const spawnX=W+120;             // 右端の更に外側から出す（確実に右端出現）
+
+// 背景マネキン
+const mannequin=new Image();
+mannequin.src='./AA3BFA6F-7DB2-44A5-BED7-E7BC31A224EF.png';
+let imgReady=false; mannequin.onload=()=>imgReady=true;
+
+// ===== Audio (click) =====
+let AC, clickBuf, running=false, goTime=null;
+async function ensureAudio(){
+  if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();
+  await AC.resume();
+  if(!clickBuf){
+    const len=AC.sampleRate*0.04;
+    clickBuf=AC.createBuffer(1,len,AC.sampleRate);
+    const d=clickBuf.getChannelData(0);
+    for(let i=0;i<len;i++){
+      d[i]=Math.sin(2*Math.PI*1000*i/AC.sampleRate)*Math.exp(-i/(len/8));
+    }
+  }
+  document.getElementById('sound').textContent='🔊 音OK';
+}
+function click(){const s=AC.createBufferSource(); s.buffer=clickBuf; s.connect(AC.destination); s.start();}
+
+// ===== Score / UI =====
+const judgeEl=document.getElementById('judge');
+const resultEl=document.getElementById('result');
+const countEl=document.getElementById('count');
+let perfect=0,good=0,miss=0;
+
+function showJudge(t,c){judgeEl.textContent=t;judgeEl.style.color=c;judgeEl.style.opacity=1;setTimeout(()=>judgeEl.style.opacity=0,500);}
+
+// ===== Chart =====
+// テンポは 96.05 BPM
+const BPM=96.05;
+const SPB=60/BPM;
+
+// 30:2（圧迫30拍 → 呼吸×2（各1.2拍ホールド＋0.7拍間））を繰り返し
+let chartTemplate=[];
+(function build(){
+  const hold=1.2*SPB;
+  let t=0;
+  const cycles=5; // 1番分の十分な長さ（必要なら増減OK）
+  for(let c=0;c<cycles;c++){
+    for(let i=0;i<30;i++){ chartTemplate.push({type:'comp',offset:t,y:chestY}); t+=SPB; }
+    chartTemplate.push({type:'breath',offset:t+0.7*SPB,hold:hold,y:mouthY}); t+=1.2*SPB+0.7*SPB;
+    chartTemplate.push({type:'breath',offset:t+0.7*SPB,hold:hold,y:mouthY}); t+=1.2*SPB+0.7*SPB;
+  }
+})();
+
+let chart=[]; // 実時間に展開後の譜面
+const HIT={perfect:0.10, good:0.18}; // 許容誤差（秒）
+
+function judgeTap(y,time){
+  for(const n of chart){
+    if(n.hit || Math.abs(n.y-y)>6) continue;
+    const diff=Math.abs(time-n.time);
+    if(diff<HIT.perfect){ n.hit='perfect'; return 'perfect'; }
+    if(diff<HIT.good){ n.hit='good'; return 'good'; }
+  }
+  return 'miss';
+}
+
+canvas.addEventListener('pointerdown', async e=>{
+  await ensureAudio(); click();
+  if(!running) return;
+  const r=canvas.getBoundingClientRect();
+  const y=(e.clientY-r.top)*(H/r.height);
+  const lane = Math.abs(y-mouthY)<40 ? mouthY : (Math.abs(y-chestY)<40 ? chestY : null);
+  if(lane==null) return;
+  const t=AC.currentTime;
+  const res=judgeTap(lane,t);
+  if(res==='perfect'){ perfect++; showJudge('Perfect!','#ff8ccf'); }
+  else if(res==='good'){ good++; showJudge('Good!','#ffd93b'); }
+  else { miss++; showJudge('Miss!','#ff4b4b'); }
+});
+
+// ===== Drawing =====
+function draw(now){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#faefdb'; ctx.fillRect(0,0,W,H);
+
+  if(imgReady){
+    const ratio=mannequin.width/mannequin.height;
+    const th=H, tw=th*ratio;
+    ctx.drawImage(mannequin,0,0,tw,th);
+  }
+
+  // レーン
+  ctx.fillStyle='rgba(150,180,255,0.25)'; ctx.fillRect(0,mouthY-20,W,40);
+  ctx.fillStyle='rgba(255,180,180,0.25)'; ctx.fillRect(0,chestY-20,W,40);
+
+  // 判定円
+  ctx.lineWidth=4;
+  ctx.strokeStyle='#1877ff'; ctx.beginPath(); ctx.arc(hitX,mouthY,30,0,Math.PI*2); ctx.stroke();
+  ctx.strokeStyle='#ff4b4b'; ctx.beginPath(); ctx.arc(hitX,chestY,35,0,Math.PI*2); ctx.stroke();
+
+  // 右→左 位置計算（spawnX から hitX まで NOTE_TRAVEL 秒）
+  const NOTE_TRAVEL = 3.0;                         // ★ 最初の到達基準にも使う
+  const speed = (spawnX - hitX) / NOTE_TRAVEL;     // px / s
+
+  for(const n of chart){
+    const travel = now - n.time;                   // 到達基準時刻からの経過
+    const x = spawnX - travel*speed;               // 右→左
+
+    if(x < -140 || x > spawnX+20) continue;        // 画面外は描かない
+
+    if(n.type==='comp'){
+      ctx.fillStyle='#ff4b4b';
+      ctx.beginPath(); ctx.arc(x,n.y,20,0,Math.PI*2); ctx.fill();
+    }else{
+      const xHold = spawnX - (now - (n.time + n.hold))*speed;
+      ctx.fillStyle='#1877ff';
+      ctx.fillRect(Math.min(x,xHold), n.y-10, Math.abs(xHold-x), 20);
+      ctx.beginPath(); ctx.arc(x,n.y,10,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(xHold,n.y,10,0,Math.PI*2); ctx.fill();
+    }
+  }
+}
+
+function loop(){
+  const now = AC ? AC.currentTime : performance.now()/1000;
+  draw(now);
+
+  if(running){
+    // すべてのノーツが処理済み + 少し余韻を持って終了
+    if(now > lastNoteTime + 2.0){ running=false; showResult(); return; }
+    requestAnimationFrame(loop);
+  }
+}
+
+function showResult(){
+  const total = chart.length;
+  const score = Math.round((perfect*3 + good*1) / (total*3) * 100);
+  resultEl.innerHTML = `💖 SCORE ${score}点！<br>Perfect: ${perfect}　Good: ${good}　Miss: ${miss}`;
+  resultEl.style.opacity = 1;
+}
+
+// ===== Start / Countdown =====
+let lastNoteTime = 0;
+
+function countdown(onGo){
+  const seq=['3','2','1','GO!']; let i=0;
+  countEl.style.opacity=1; countEl.textContent=seq[i++];
+  const timer=setInterval(()=>{
+    if(i<seq.length){ countEl.textContent=seq[i++]; }
+    else{ clearInterval(timer); setTimeout(()=>countEl.style.opacity=0,500); onGo(); }
+  },1000);
+}
+
+document.getElementById('start').onclick=async()=>{
+  await ensureAudio(); click();
+  perfect=good=miss=0; resultEl.style.opacity=0; running=true;
+
+  countdown(()=>{
+    goTime = AC.currentTime;
+
+    // ★ 最初のノーツを「GO+3秒」で判定円到達にする：出現ベース時刻
+    const ARRIVE_FIRST = 3.0;                     // GOから到達まで
+    const NOTE_TRAVEL  = 3.0;                     // 描画側と同じ
+    const appearDelay  = ARRIVE_FIRST - NOTE_TRAVEL;   // 出現開始までの遅延
+    const startBase    = goTime + appearDelay;         // ここに template の offset を足す
+
+    chart = chartTemplate.map(n=>({
+      ...n,
+      time: startBase + n.offset,                 // 判定基準時刻
+      hold: n.hold||0,
+      y: n.y,
+      hit: false
+    }));
+
+    // ラストノーツの時刻（判定用）
+    lastNoteTime = chart.reduce((mx,n)=>Math.max(mx, n.time + (n.hold||0)), 0);
+
+    loop();
+  });
+};
+
+document.getElementById('stop').onclick=()=>{ running=false; showResult(); };
+document.getElementById('reset').onclick=()=>window.location.reload();
+
+})();
+</script>
+</body>
+</html>
