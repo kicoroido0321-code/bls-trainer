@@ -115,9 +115,10 @@ if(running&&goTime){if(now>=goTime+STOP_AT||chart.every(n=>n.hit)){running=false
 if(running)requestAnimationFrame(loop)}
 
 // ✅ 修正版：スコア計算のみ正規化
-function showResult(){
-  const totalNotes = chart.filter(n => n.type === "comp" || n.type === "breath").length;
-  const score = Math.round((perfect * 3 + good * 1) / (totalNotes * 3) * 100);
+function showResult() {
+  const hittable = chart.filter(n => n.type === "comp" || n.type === "breath").length;
+  const total = perfect + good + miss;
+  const score = Math.round(((perfect * 100) + (good * 70)) / Math.max(total, 1));
   resultPanel.innerHTML = `💖 SCORE ${score}点！<br>Perfect: ${perfect}　Good: ${good}　Miss: ${miss}`;
   resultPanel.style.opacity = 1;
 }
